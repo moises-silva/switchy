@@ -5,9 +5,13 @@
 Bert testing
 """
 from collections import deque
+from datetime import datetime
 from ..apps import app
 from ..marks import event_callback
 from ..utils import get_logger, APIError
+from influxdb.line_protocol import make_lines
+import requests
+TELEGRAF_URL = 'http://127.0.0.1:8186/write'
 
 
 @app
@@ -169,3 +173,27 @@ class Bert(object):
     def on_synced(self, sess):
         sess.vars['bert_sync'] = True
         self.log.debug('BERT sync on session {}'.format(sess.uuid))
+
+    @event_callback('mod_bert::delay_probe_fired')
+    def on_probe_fired(self, sess):
+        self.log.error('BERT delay probe fired on realm %s on session %s', sess['bert-realm'], sess.uuid)
+
+    @event_callback('mod_bert::delay_probe_received')
+    def on_probe_received(self, sess):
+        self.log.error('BERT delay probe received on realm %s with delay of %sms on session %s',
+                       sess['bert-realm'], (int(sess['bert-delay-us']) / 1000), sess.uuid)
+        point = {
+            'measurement': 'bert_delay',
+            'tags': {
+                'realm': sess['bert-realm'],
+                 # This session tag should be moved removed at some point as it does not
+                 # scale (tags on influx have small limits), but then we need telgraf configured with aggregation
+                 'session': sess.uuid
+			},
+            'fields': {
+                'value': int(sess['bert-delay-us']) / 1000
+            },
+            'timestamp': datetime.utcnow().isoformat() + 'Z'
+        }
+        data = make_lines({'points': [point]}, 's')
+        requests.post(TELEGRAF_URL, data)
